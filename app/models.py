@@ -1,6 +1,10 @@
 from sklearn.ensemble import RandomForestRegressor
 import pandas as pd
 from app.data_loader import DataLoader
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 def train_data_feature_generation(df):
@@ -49,6 +53,8 @@ def train_data_feature_generation(df):
     # Replace negative with zero
     num = df._get_numeric_data()
     num[num < 0] = 0
+
+    df = df.fillna(0)
 
     return df
 
@@ -101,19 +107,31 @@ class TrainerEstimator(object):
                          'minutes_of_order',
                          'store_id_int']
 
-    def __init__(self, market_id, store_primary_category):
-        self.market_id = market_id
-        self.store_primary_category = store_primary_category
-
+    def __init__(self):
         train_df, validation_df = DataLoader().load_train_data()
-        self.model, self.train_median_dict = self.create_delivery_models(train_df)
+        # self.model, self.train_median_dict = self.create_delivery_models(train_df)
 
-    def create_delivery_models(self, train_df):
+        self.model_dict = {}
+        for (category, id) in self.get_market_id_categories(train_df):
+            self.model_dict[(category, id)] = self.create_delivery_models(train_df, category, id)
 
-        market_id_filter = train_df.market_id == self.market_id
-        store_primary_filter = train_df.store_primary_category == self.store_primary_category
+    def get_market_id_categories(self, df):
+        g = df.groupby(['store_primary_category', 'market_id']).count().add_suffix('_Count').reset_index()
+        return zip(g['store_primary_category'], g['market_id'])
 
-        train_df = train_df[market_id_filter & store_primary_filter]
+    def create_delivery_models(self, train_df, store_primary_category, market_id):
+        market_id = int(market_id)
+        print("create_delivery_models({}, {})".format(store_primary_category, market_id))
+
+        market_id_filter = train_df.market_id == market_id
+        store_primary_filter = train_df.store_primary_category == store_primary_category
+
+        # If there was enough data to create a looser model
+        if len(train_df[market_id_filter & store_primary_filter]) < 50:
+            train_df = train_df[market_id_filter | store_primary_filter]
+        else:
+            train_df = train_df[market_id_filter & store_primary_filter]
+
         train_df = train_data_feature_generation(train_df)
 
         train_median_dict = train_df.dropna().median().to_dict()
@@ -141,5 +159,17 @@ class TrainerEstimator(object):
     def predict(self, prediction_df):
         prediction_df = test_data_feature_generation(prediction_df)
         prediction_df = prediction_df.fillna(self.train_median_dict)
-        return self.model.predict(prediction_df[self.features_col_name].values)
+        # p = self.model.predict(prediction_df[self.features_col_name].values)
+        # prediction_df['predicted_delivery_seconds'] = p
+        #
+        # return prediction_df[['delivery_id', 'predicted_delivery_seconds']]
 
+        out = list()
+        for index, row in prediction_df[self.features_col_name].iterrows():
+            model, train_median_dict = self.model_dict[(row['store_primary_category'], row['market_id'])]
+
+            p = model.predict(row)
+            row['predicted_delivery_seconds'] = p
+            out.append(row[['delivery_id', 'predicted_delivery_seconds']])
+
+        return pd.DataFrame(out)
