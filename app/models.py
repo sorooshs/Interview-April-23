@@ -1,8 +1,10 @@
 from sklearn.ensemble import RandomForestRegressor
 import pandas as pd
+import numpy as np
 from app.data_loader import DataLoader
 import logging
-
+from sklearn.externals import joblib
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -112,25 +114,42 @@ class TrainerEstimator(object):
         # self.model, self.train_median_dict = self.create_delivery_models(train_df)
 
         self.model_dict = {}
-        for (category, id) in self.get_market_id_categories(train_df):
-            self.model_dict[(category, id)] = self.create_delivery_models(train_df, category, id)
+        for (category, market_id) in self.get_market_id_categories(train_df):
+            self.load_or_create_models(train_df, category, market_id)
+
+        # General Model
+        self.load_or_create_models(train_df, None, None)
+
+    def load_or_create_models(self, train_df, category, market_id):
+        model_key = (category or 'all', market_id or 'all')
+        model_filename = 'models/{}_{}.sav'.format(*model_key)
+
+        if Path(model_filename).is_file():
+            print('loading delivery models({}, {})'.format(*model_key))
+            self.model_dict[model_key] = joblib.load(model_filename)
+        else:
+            print('creating delivery models({}, {})'.format(*model_key))
+            self.model_dict[model_key] = self.create_delivery_models(train_df, category, market_id)
+            joblib.dump(self.model_dict[model_key], model_filename)
 
     def get_market_id_categories(self, df):
         g = df.groupby(['store_primary_category', 'market_id']).count().add_suffix('_Count').reset_index()
-        return zip(g['store_primary_category'], g['market_id'])
+        return zip(g['store_primary_category'], g['market_id'].astype(int))
 
     def create_delivery_models(self, train_df, store_primary_category, market_id):
-        market_id = int(market_id)
         print("create_delivery_models({}, {})".format(store_primary_category, market_id))
 
-        market_id_filter = train_df.market_id == market_id
-        store_primary_filter = train_df.store_primary_category == store_primary_category
+        # If both market_id and store_primary_category filter train data based on them
+        if market_id and store_primary_category:
+            market_id_filter = train_df.market_id == market_id
+            store_primary_filter = train_df.store_primary_category == store_primary_category
 
-        # If there was enough data to create a looser model
-        if len(train_df[market_id_filter & store_primary_filter]) < 50:
-            train_df = train_df[market_id_filter | store_primary_filter]
-        else:
-            train_df = train_df[market_id_filter & store_primary_filter]
+            # If there was enough data to create a looser model
+            filtered_train_df = train_df[market_id_filter & store_primary_filter]
+            if len(filtered_train_df) >= 50:
+                train_df = filtered_train_df
+            else:
+                train_df = train_df[market_id_filter | store_primary_filter]
 
         train_df = train_data_feature_generation(train_df)
 
@@ -158,18 +177,28 @@ class TrainerEstimator(object):
 
     def predict(self, prediction_df):
         prediction_df = test_data_feature_generation(prediction_df)
-        prediction_df = prediction_df.fillna(self.train_median_dict)
-        # p = self.model.predict(prediction_df[self.features_col_name].values)
-        # prediction_df['predicted_delivery_seconds'] = p
-        #
-        # return prediction_df[['delivery_id', 'predicted_delivery_seconds']]
 
         out = list()
-        for index, row in prediction_df[self.features_col_name].iterrows():
-            model, train_median_dict = self.model_dict[(row['store_primary_category'], row['market_id'])]
+        for index in range(len(prediction_df)):
 
-            p = model.predict(row)
-            row['predicted_delivery_seconds'] = p
-            out.append(row[['delivery_id', 'predicted_delivery_seconds']])
+            print("index = ", index)
+            row = prediction_df.iloc[[index]]
+            store_primary_category_key = row.iloc[0]['store_primary_category']
+
+            if not np.isnan(row.iloc[0]['market_id']):
+                market_id_key = int(row.iloc[0]['market_id'])
+            else:
+                market_id_key = 'all'
+
+            model_key = (store_primary_category_key, market_id_key)
+            if model_key in self.model_dict:
+                model, train_median_dict = self.model_dict[model_key]
+            else:
+                model, train_median_dict = self.model_dict[('all', 'all')]
+
+            row = row.fillna(train_median_dict)
+            row['predicted_delivery_seconds'] = model.predict(row[self.features_col_name]).round().astype(int)
+
+            out.append(row.iloc[0][['delivery_id', 'predicted_delivery_seconds']])
 
         return pd.DataFrame(out)

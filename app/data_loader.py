@@ -1,12 +1,14 @@
 
 import pandas as pd
 import datetime
+import sys
 
 
 class DataLoader(object):
 
     train_filename = 'Data_Science/historical_data.csv'
-    test_filename = 'Data_Science/data_to_predict.json'
+    #test_filename = 'Data_Science/data_to_predict_2.json'
+    test_filename = sys.argv[2]
 
     features_col_name = ['market_id',
                          'order_protocol',
@@ -32,8 +34,8 @@ class DataLoader(object):
         train_df = input_df[time_split]
         test_df = input_df[~time_split]
 
-        test_df.dropna(subset=['actual_delivery_time'], inplace = True)
-        test_df.dropna(subset=['created_at'], inplace = True)
+        test_df.dropna(subset=['actual_delivery_time'], inplace=True)
+        test_df.dropna(subset=['created_at'], inplace=True)
 
         # print('''len train: {},
         #     len test: {}'''.format(len(train_df), len(test_df)))
